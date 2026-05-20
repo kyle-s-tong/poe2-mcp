@@ -112,6 +112,32 @@ debug_log(f"Working directory: {Path.cwd()}")
 debug_log(f"Script location: {__file__}")
 
 
+_UNIQUES_CACHE: Optional[List[Dict[str, Any]]] = None
+
+
+def _load_uniques() -> List[Dict[str, Any]]:
+    """Load PoB-extracted uniques from disk, cached after first call."""
+    global _UNIQUES_CACHE
+    if _UNIQUES_CACHE is None:
+        path = DATA_DIR / "pob_uniques.json"
+        if not path.exists():
+            _UNIQUES_CACHE = []
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                _UNIQUES_CACHE = json.load(f).get("uniques", [])
+    return _UNIQUES_CACHE
+
+
+def _resolve_current_variant_idx(variants: List[str]) -> Optional[int]:
+    """Return the 1-based index of the 'Current' variant, or the last one as fallback."""
+    if not variants:
+        return None
+    for i, v in enumerate(variants):
+        if v.strip().lower() == "current":
+            return i + 1
+    return len(variants)
+
+
 class PoE2BuildOptimizerMCP:
     """
     Main MCP server for Path of Exile 2 build optimization
@@ -388,6 +414,11 @@ class PoE2BuildOptimizerMCP:
                 return await self._handle_validate_item_mods(arguments)
             elif name == "get_available_mods":
                 return await self._handle_get_available_mods(arguments)
+            # UNIQUE ITEM TOOLS
+            elif name == "list_uniques":
+                return await self._handle_list_uniques(arguments)
+            elif name == "inspect_unique":
+                return await self._handle_inspect_unique(arguments)
             else:
                 raise ValueError(f"Unknown tool: {name}")
 
@@ -1026,6 +1057,61 @@ class PoE2BuildOptimizerMCP:
                             }
                         },
                         "required": ["generation_type"]
+                    }
+                ),
+
+                # Unique Items
+                types.Tool(
+                    name="list_uniques",
+                    description="List unique items with optional filters by slot, name substring, or league. Programmatic uniques (e.g. Megalomaniac, Time-Lost Diamond) are hidden by default.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "slot": {
+                                "type": "string",
+                                "description": "Filter by item slot (e.g. amulet, ring, body, mace, jewel)"
+                            },
+                            "name_substring": {
+                                "type": "string",
+                                "description": "Case-insensitive substring match on unique name"
+                            },
+                            "league": {
+                                "type": "string",
+                                "description": "Filter by league name (case-insensitive substring)"
+                            },
+                            "include_programmatic": {
+                                "type": "boolean",
+                                "description": "Include programmatic uniques whose stats are generated at runtime (default false)",
+                                "default": False
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "default": 50
+                            },
+                            "offset": {
+                                "type": "integer",
+                                "default": 0
+                            }
+                        }
+                    }
+                ),
+                types.Tool(
+                    name="inspect_unique",
+                    description="Get details for a unique item by name. Defaults to the 'Current' variant; pass show_all_variants=true to see every variant.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Unique item name (case-insensitive; exact match preferred, falls back to substring)"
+                            },
+                            "show_all_variants": {
+                                "type": "boolean",
+                                "description": "Show stats from every variant (default false: shows only the Current variant)",
+                                "default": False
+                            }
+                        },
+                        "required": ["name"]
                     }
                 )
             ]
@@ -4413,6 +4499,142 @@ Could not extract account and character from URL.
 
         except Exception as e:
             logger.error(f"Error inspecting base item: {e}")
+            return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+
+    # ============================================================================
+    # UNIQUE ITEM TOOLS HANDLERS
+    # ============================================================================
+
+    async def _handle_list_uniques(self, args: dict) -> List[types.TextContent]:
+        """List unique items with optional filters."""
+        try:
+            uniques = _load_uniques()
+            slot = (args.get("slot") or "").lower().strip()
+            name_substring = (args.get("name_substring") or "").lower().strip()
+            league = (args.get("league") or "").lower().strip()
+            include_programmatic = bool(args.get("include_programmatic", False))
+            limit = int(args.get("limit", 50))
+            offset = int(args.get("offset", 0))
+
+            filtered = []
+            for u in uniques:
+                if not include_programmatic and u.get("programmatic"):
+                    continue
+                if slot and u.get("slot", "").lower() != slot:
+                    continue
+                if name_substring and name_substring not in u.get("name", "").lower():
+                    continue
+                if league and league not in (u.get("league") or "").lower():
+                    continue
+                filtered.append(u)
+
+            filtered.sort(key=lambda u: u.get("name", "").lower())
+            total = len(filtered)
+            page = filtered[offset:offset + limit]
+
+            lines = [f"# Unique Items\n"]
+            lines.append(f"**Showing {len(page)} of {total}** (offset {offset}, limit {limit})\n")
+            if not page:
+                lines.append("_No uniques match those filters._")
+            else:
+                for u in page:
+                    extras = []
+                    if u.get("league"):
+                        extras.append(f"league: {u['league']}")
+                    if u.get("programmatic"):
+                        extras.append("programmatic")
+                    extra_str = f" — _{', '.join(extras)}_" if extras else ""
+                    lines.append(f"- **{u.get('name')}** · {u.get('base')} · `{u.get('slot')}`{extra_str}")
+
+            return [types.TextContent(type="text", text="\n".join(lines))]
+
+        except Exception as e:
+            logger.error(f"Error listing uniques: {e}")
+            return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+
+    async def _handle_inspect_unique(self, args: dict) -> List[types.TextContent]:
+        """Get details for a specific unique item. Defaults to the 'Current' variant."""
+        try:
+            name_query = (args.get("name") or "").strip()
+            if not name_query:
+                return [types.TextContent(type="text", text="Error: name is required")]
+            show_all_variants = bool(args.get("show_all_variants", False))
+
+            uniques = _load_uniques()
+            name_lower = name_query.lower()
+
+            found = next((u for u in uniques if u.get("name", "").lower() == name_lower), None)
+            if not found:
+                found = next((u for u in uniques if name_lower in u.get("name", "").lower()), None)
+
+            if not found:
+                return [types.TextContent(
+                    type="text",
+                    text=f"# Unique Not Found\n\nNo unique matching '{name_query}'. Try `list_uniques` to browse."
+                )]
+
+            lines = [f"# {found['name']}\n"]
+            lines.append(f"**Base:** {found.get('base')}")
+            lines.append(f"**Slot:** {found.get('slot')}")
+            if found.get("league"):
+                lines.append(f"**League:** {found['league']}")
+            if found.get("source"):
+                lines.append(f"**Source:** {found['source']}")
+            if found.get("implicits_count"):
+                lines.append(f"**Implicits:** {found['implicits_count']}")
+            if found.get("limited_to"):
+                lines.append(f"**Limited to:** {found['limited_to']}")
+            if found.get("requires_level"):
+                lines.append(f"**Requires Level:** {found['requires_level']}")
+
+            variants = found.get("variants") or []
+            if variants:
+                lines.append(f"**Variants:** {', '.join(variants)}")
+
+            if found.get("programmatic"):
+                note = found.get("programmatic_note", "Variants for this unique are generated by PoB at runtime.")
+                lines.append("")
+                lines.append(f"_{note}_")
+                return [types.TextContent(type="text", text="\n".join(lines))]
+
+            stats = found.get("stats", [])
+            if show_all_variants or not variants:
+                shown = stats
+                if variants:
+                    lines.append("\n**Stats (all variants):**")
+                else:
+                    lines.append("\n**Stats:**")
+                for s in shown:
+                    text = s.get("text", "")
+                    tags = s.get("tags", [])
+                    tag_str = f" `[{', '.join(tags)}]`" if tags else ""
+                    if s.get("variants"):
+                        vnames = ", ".join(
+                            variants[i - 1] for i in s["variants"]
+                            if 0 < i <= len(variants)
+                        )
+                        lines.append(f"- {text}{tag_str} _(variant: {vnames})_")
+                    else:
+                        lines.append(f"- {text}{tag_str}")
+            else:
+                idx = _resolve_current_variant_idx(variants)
+                chosen = variants[idx - 1] if idx else None
+                filtered_stats = [
+                    s for s in stats
+                    if not s.get("variants") or idx in s.get("variants", [])
+                ]
+                lines.append(f"\n**Showing variant:** {chosen}  _(pass `show_all_variants: true` for every variant)_")
+                lines.append("\n**Stats:**")
+                for s in filtered_stats:
+                    text = s.get("text", "")
+                    tags = s.get("tags", [])
+                    tag_str = f" `[{', '.join(tags)}]`" if tags else ""
+                    lines.append(f"- {text}{tag_str}")
+
+            return [types.TextContent(type="text", text="\n".join(lines))]
+
+        except Exception as e:
+            logger.error(f"Error inspecting unique: {e}")
             return [types.TextContent(type="text", text=f"Error: {str(e)}")]
 
     # ============================================================================

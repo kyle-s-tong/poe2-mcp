@@ -8,7 +8,7 @@
 >
 > This is an independent, fan-made community project built out of love for Path of Exile 2. It is **not affiliated with, endorsed by, or officially connected to Grinding Gear Games** in any way. Path of Exile is a trademark of Grinding Gear Games. All game data and assets remain the property of their respective owners.
 
-A Model Context Protocol (MCP) server for Path of Exile 2 character analysis and optimization. Provides 32 MCP tools for AI-powered build analysis, passive tree analysis, item mod validation, support gem validation, and Path of Building integration.
+A Model Context Protocol (MCP) server for Path of Exile 2 character analysis and optimization. Provides 34 MCP tools for AI-powered build analysis, passive tree analysis, item mod validation, support gem validation, unique item lookups, and Path of Building integration.
 
 ## What is This?
 
@@ -18,7 +18,7 @@ This is an **MCP server** - a backend service that gives AI assistants (like Cla
 - Fetches your character data from poe.ninja
 - Analyzes defensive stats, skills, gear, and passive tree
 - Validates support gem combinations (prevents invalid recommendations)
-- Inspects spell and support gem data
+- Inspects spell, support gem, base item, and unique item data (sourced from Path of Building)
 - Imports/exports Path of Building codes
 - Compares your build to top ladder players
 - Explains PoE2 game mechanics
@@ -147,7 +147,7 @@ Check each platform's documentation for MCP server configuration.
 
 ---
 
-## Available Tools (32 Registered)
+## Available Tools (34 Registered)
 
 Once connected, you can ask your AI assistant to use these tools:
 
@@ -182,6 +182,12 @@ Once connected, you can ask your AI assistant to use these tools:
 |------|-------------|
 | `list_all_base_items` | List all base item types |
 | `inspect_base_item` | Get details for a specific base item |
+
+### Unique Items
+| Tool | Description |
+|------|-------------|
+| `list_uniques` | List unique items with filters (slot, name substring, league) |
+| `inspect_unique` | Get details for a unique by name; defaults to the Current variant |
 
 ### Item Mod Data
 | Tool | Description |
@@ -247,6 +253,10 @@ Once configured, just talk to your AI naturally:
 
 > "Search for fire resistance mods" (uses `search_mods_by_stat`)
 
+> "Show me all unique amulets" (uses `list_uniques`)
+
+> "What does Mjölner do in the current patch?" (uses `inspect_unique` — defaults to Current variant)
+
 The AI will use the appropriate tools automatically.
 
 ---
@@ -271,11 +281,12 @@ The server includes a local database with:
 - 4,975+ passive tree nodes
 - 335+ ascendancy nodes (99% coverage)
 - 14,269 item modifiers (2,252 prefixes, 2,037 suffixes, 8,930 implicits)
-- Complete skill gem data from Path of Building
+- 1,249 skill gems (incl. spells and supports, with per-level stats from PoB)
+- 1,122 base item types
+- 388 unique items (382 statically defined + 6 programmatic from PoB)
 - Support gem effects and interactions
-- Base items and unique items
 
-Data is loaded from `data/` directory on startup.
+Data is loaded from `data/` directory on startup. The skill, base, and unique data files are generated from upstream [Path of Building (PoE2)](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2) — see [Refreshing PoB Data](#refreshing-pob-data) for how to regenerate them when PoE2 patches.
 
 ---
 
@@ -283,39 +294,37 @@ Data is loaded from `data/` directory on startup.
 
 ```
 poe2-mcp/
-├── launch.py              # Entry point
+├── launch.py              # Entry point (MCP-stdio safe: chatter → stderr, JSON-RPC → stdout)
 ├── src/
-│   ├── mcp_server.py      # Main MCP server (32 tools registered)
+│   ├── mcp_server.py      # Main MCP server (34 tools registered)
 │   ├── api/               # External API clients
-│   │   ├── poe_ninja_api.py
-│   │   ├── character_fetcher.py
-│   │   └── rate_limiter.py
 │   ├── analyzer/          # Analysis components
-│   │   ├── character_analyzer.py
-│   │   └── weakness_detector.py
 │   ├── calculator/        # Numeric calculations
-│   │   ├── ehp_calculator.py
-│   │   ├── spirit_calculator.py
-│   │   └── stun_calculator.py
-│   ├── data/              # Data providers
+│   ├── data/
 │   │   ├── mod_data_provider.py
-│   │   └── fresh_data_provider.py
+│   │   └── fresh_data_provider.py  # Loads complete_models/*.json (skills, supports, bases, tree, stats)
 │   ├── optimizer/         # Optimization engines
-│   │   ├── gear_optimizer.py
-│   │   └── gem_synergy_calculator.py
-│   ├── parsers/           # Data parsers
-│   │   ├── passive_tree_resolver.py
-│   │   └── specifications/  # Datc64 format specifications
+│   ├── parsers/           # Datc64 binary parsers
 │   ├── knowledge/         # Game mechanics knowledge base
-│   │   └── poe2_mechanics.py
 │   └── database/          # SQLite database
-│       ├── models.py
-│       └── manager.py
-├── data/                  # Game data files
-│   ├── psg_passive_nodes.json
-│   ├── poe2_support_gems_database.json
-│   └── poe2_mods_extracted.json
-└── tests/                 # Test suite
+├── data/
+│   ├── complete_models/
+│   │   ├── active_skills.json       # 6,454 skill IDs (incl. minions/monsters)
+│   │   ├── support_gems.json
+│   │   ├── passive_tree.json
+│   │   ├── stats.json
+│   │   └── base_items.json          # 1,122 bases (refreshed from PoB)
+│   ├── pob_complete_skills.json     # 1,249 player skills with per-level stats (PoB)
+│   ├── pob_uniques.json             # 388 uniques (PoB)
+│   ├── poe2_mods_extracted.json     # → symlink to poe2_mods_corrected.json
+│   ├── poe2_mods_corrected.json     # 14,269 item mods
+│   └── psg_passive_nodes.json
+├── scripts/
+│   ├── refresh_pob_skills.py        # PoB Lua → data/pob_complete_skills.json
+│   ├── refresh_pob_bases.py         # PoB Lua → data/complete_models/base_items.json
+│   ├── refresh_pob_uniques.py       # PoB Lua → data/pob_uniques.json
+│   └── _pob_lua.py                  # Shared fetch/parse helpers
+└── tests/                  # Test suite
 ```
 
 ---
@@ -336,13 +345,27 @@ poe2-mcp
 python launch.py
 ```
 
+### Refreshing PoB Data
+
+Skill, base item, and unique item data is derived from upstream [PathOfBuilding-PoE2](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2). When PoE2 patches, regenerate the JSON snapshots:
+
+```bash
+pip install slpp                                 # Lua parser, used only by the refresh scripts
+python scripts/refresh_pob_skills.py             # → data/pob_complete_skills.json (1,249 skills)
+python scripts/refresh_pob_bases.py              # → data/complete_models/base_items.json (1,122 bases)
+python scripts/refresh_pob_uniques.py            # → data/pob_uniques.json (388 uniques)
+```
+
+Each script pulls the relevant `src/Data/**/*.lua` files from the PoB `dev` branch over HTTPS and converts them into the JSON shape consumed by the MCP tools. No PoB checkout required.
+
 ### Key Files
-- `src/mcp_server.py` - MCP server with 32 registered tools
+- `src/mcp_server.py` - MCP server with 34 registered tools
+- `src/data/fresh_data_provider.py` - Singleton loader for the `data/complete_models/` snapshot
 - `src/data/mod_data_provider.py` - Item mod data access layer
 - `src/calculator/ehp_calculator.py` - EHP calculations
 - `src/optimizer/gem_synergy_calculator.py` - Support gem logic
 - `data/psg_passive_nodes.json` - Passive tree database
-- `data/poe2_mods_extracted.json` - Item modifier database (14,269 mods)
+- `data/poe2_mods_corrected.json` - Item modifier database (14,269 mods)
 
 ---
 
@@ -361,6 +384,7 @@ python launch.py
 ### Tools return empty results
 - Database may need initialization: `python launch.py` handles this
 - Check `data/` directory exists with JSON files
+- If `inspect_spell_gem`, `inspect_base_item`, or `list_uniques` returns "not found" / empty, regenerate the PoB snapshots — see [Refreshing PoB Data](#refreshing-pob-data)
 
 ---
 
@@ -368,7 +392,7 @@ python launch.py
 
 Data sources:
 - [poe.ninja](https://poe.ninja) - Character data and builds
-- [Path of Building (PoE2)](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2) - Skill data
+- [Path of Building (PoE2)](https://github.com/PathOfBuildingCommunity/PathOfBuilding-PoE2) - Skill, base item, and unique item data (see [Refreshing PoB Data](#refreshing-pob-data))
 - [Path of Grinding](https://pathofgrinding.com) - Passive tree data
 
 MCP Protocol:

@@ -184,8 +184,17 @@ class FreshDataProvider:
                     except ValueError:
                         pass
 
+            base_items_file = COMPLETE_MODELS_PATH / 'base_items.json'
+            if base_items_file.exists():
+                with open(base_items_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    for item_id, item_data in data.get('base_items', {}).items():
+                        self._base_items[item_id] = item_data
+
             logger.info(f"Loaded complete models: {len(self._active_skills)} active skills, "
-                       f"{len(self._support_gems)} support gems, {len(self._passive_skills)} passives")
+                       f"{len(self._support_gems)} support gems, "
+                       f"{len(self._passive_skills)} passives, "
+                       f"{len(self._base_items)} base items")
             return True
 
         except Exception as e:
